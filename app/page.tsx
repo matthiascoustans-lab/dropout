@@ -189,7 +189,7 @@ export default function DropOut() {
   ]);
   const [input, setInput] = useState("");
 
-  const send = (text) => {
+ const send = (text?: string) => {
     const q = text || input.trim();
     if (!q) return;
     const userMsg = { role:"user", content: q };
