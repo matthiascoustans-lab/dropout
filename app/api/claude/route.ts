@@ -4,8 +4,8 @@ import { NextResponse } from "next/server";
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function searchYouTube(query: string, max = 6, options: {
-  order?: "viewCount"|"date"|"relevance",
-  publishedAfter?: string,
+  order?: "viewCount" | "date" | "relevance";
+  publishedAfter?: string;
 } = {}) {
   try {
     const params = new URLSearchParams({
@@ -34,7 +34,35 @@ async function searchYouTube(query: string, max = 6, options: {
       publishedAt: item.snippet.publishedAt,
       xp: 15,
     }));
-  } catch (e) { console.error("YouTube error:", e); return []; }
+  } catch (e) {
+    console.error("YouTube error:", e);
+    return [];
+  }
+}
+
+async function searchArticles(query: string, max = 4) {
+  try {
+    const key = process.env.GOOGLE_API_KEY || process.env.YOUTUBE_API_KEY || "";
+    const cx = process.env.GOOGLE_CSE_ID || "";
+    const res = await fetch(
+      `https://www.googleapis.com/customsearch/v1?q=${encodeURIComponent(query)}&key=${key}&cx=${cx}&num=${max}`
+    );
+    const data = await res.json();
+    if (!data.items) return [];
+    return data.items.map((item: any) => ({
+      type: "ARTICLE",
+      source: item.displayLink,
+      title: item.title,
+      excerpt: item.snippet || "",
+      duration: "Article",
+      url: item.link,
+      thumbnail: item.pagemap?.cse_image?.[0]?.src || null,
+      xp: 10,
+    }));
+  } catch (e) {
+    console.error("Article error:", e);
+    return [];
+  }
 }
 
 function buildQueries(passion: string, profile: any): string[] {
@@ -69,7 +97,6 @@ function buildQueries(passion: string, profile: any): string[] {
     queries.push("Porsche 911 guide achat buyer guide");
     queries.push("Porsche 911 best model to buy investment");
   }
-
   if (style.includes("Vintage")) {
     queries.push("Porsche 964 993 air cooled review");
     queries.push("Porsche 911 classic air cooled restoration");
@@ -78,16 +105,12 @@ function buildQueries(passion: string, profile: any): string[] {
     queries.push("Porsche 911 992 997 review test drive");
     queries.push("Porsche 911 GT3 Turbo S modern review");
   }
-
   if (context === "Futur acheteur") {
     queries.push("Porsche 911 buying guide what to check");
-    queries.push("Porsche 911 which model buy budget");
   }
   if (context === "Propriétaire") {
     queries.push("Porsche 911 maintenance tips owner");
-    queries.push("Porsche 911 modifications upgrades owner");
   }
-
   if (watchStyle.includes("Tutoriels mécanique")) {
     queries.push("Porsche 911 DIY repair tutorial");
   }
@@ -101,24 +124,22 @@ function buildQueries(passion: string, profile: any): string[] {
     queries.push("Porsche 911 documentary full film");
   }
 
-  // Toujours au moins 3 requêtes
   if (queries.length === 0) {
     queries.push("Porsche 911 best videos");
     queries.push("Porsche 911 documentary");
     queries.push("Porsche 911 guide");
   }
 
-  // Shuffle pour varier à chaque rechargement
   return queries.sort(() => Math.random() - 0.5).slice(0, 3);
 }
 
 function getPublishedAfter(dateFilter: string): string | undefined {
   const now = Date.now();
   const map: Record<string, number> = {
-    "day": 24 * 60 * 60 * 1000,
-    "week": 7 * 24 * 60 * 60 * 1000,
-    "month": 30 * 24 * 60 * 60 * 1000,
-    "year": 365 * 24 * 60 * 60 * 1000,
+    day: 24 * 60 * 60 * 1000,
+    week: 7 * 24 * 60 * 60 * 1000,
+    month: 30 * 24 * 60 * 60 * 1000,
+    year: 365 * 24 * 60 * 60 * 1000,
   };
   return map[dateFilter] ? new Date(now - map[dateFilter]).toISOString() : undefined;
 }
@@ -133,23 +154,26 @@ function cleanText(text: string): string {
 }
 
 export async function POST(request: Request) {
-  const { passion, type, page = 1, userProfile, subcategory, dateFilter, order, chatQuery } = await request.json();
+  const body = await request.json();
+  const { passion, type, page = 1, userProfile, subcategory, dateFilter, order, chatQuery, topic, focus, level } = body;
 
+  // ── FEED ──────────────────────────────────────────────────────────────
   if (type === "feed") {
     const queries = subcategory
       ? [`${passion} ${subcategory}`]
       : buildQueries(passion, userProfile);
 
     const allVideos = await Promise.all(
-      queries.map(q => searchYouTube(q, 3, {
-        order: order || "viewCount",
-        publishedAfter: dateFilter ? getPublishedAfter(dateFilter) : undefined,
-      }))
+      queries.map((q) =>
+        searchYouTube(q, 3, {
+          order: order || "viewCount",
+          publishedAfter: dateFilter ? getPublishedAfter(dateFilter) : undefined,
+        })
+      )
     );
 
-    // Déduplique par videoId
     const seen = new Set<string>();
-    const videos = allVideos.flat().filter(v => {
+    const videos = allVideos.flat().filter((v) => {
       if (seen.has(v.videoId)) return false;
       seen.add(v.videoId);
       return true;
@@ -160,35 +184,131 @@ export async function POST(request: Request) {
     });
   }
 
+  // ── ARTICLES ───────────────────────────────────────────────────────────
+  if (type === "articles") {
+    const articles = await searchArticles(`${passion} guide review`);
+    return NextResponse.json({
+      resources: articles.map((r, i) => ({ ...r, id: `article-${Date.now()}-${i}` })),
+    });
+  }
+
+  // ── PODCASTS ───────────────────────────────────────────────────────────
+  if (type === "podcasts") {
+    const videos = await searchYouTube(`${passion} podcast`, 8, { order: "relevance" });
+    return NextResponse.json({
+      resources: videos.map((r, i) => ({ ...r, id: `podcast-${Date.now()}-${i}` })),
+    });
+  }
+
+  // ── FORUMS ─────────────────────────────────────────────────────────────
+  if (type === "forums") {
+    const articles = await searchArticles(`${passion} forum discussion reddit`, 6);
+    return NextResponse.json({
+      resources: articles.map((r, i) => ({ ...r, id: `forum-${Date.now()}-${i}` })),
+    });
+  }
+
+  // ── NEWS ───────────────────────────────────────────────────────────────
+  if (type === "news") {
+    const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const [videos, articles] = await Promise.all([
+      searchYouTube(`${passion} news actualité`, 4, { order: "date", publishedAfter: since48h }),
+      searchArticles(`${passion} actualité récent 2025`, 4),
+    ]);
+    return NextResponse.json({
+      resources: [...articles, ...videos].map((r, i) => ({ ...r, id: `news-${Date.now()}-${i}` })),
+    });
+  }
+
+  // ── SEARCH (depuis chatbot) ────────────────────────────────────────────
   if (type === "search") {
-    // Recherche directe depuis le chatbot
     const videos = await searchYouTube(chatQuery || passion, 6, { order: "relevance" });
     return NextResponse.json({
       resources: videos.map((r, i) => ({ ...r, id: `search-${Date.now()}-${i}` })),
     });
   }
 
-  if (type === "news") {
-    const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-    const videos = await searchYouTube(`${passion} news actualité`, 8, {
-      order: "date",
-      publishedAfter: since48h,
+  // ── LEARNING PATH ──────────────────────────────────────────────────────
+  if (type === "learning_path") {
+    const t = topic || passion || "Porsche 911";
+    const f = focus || "";
+    const l = level || "Passionné";
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4000,
+      system: "Tu es un expert pédagogique. Réponds UNIQUEMENT en JSON valide, sans markdown, sans texte avant ou après le JSON.",
+      messages: [
+        {
+          role: "user",
+          content: `Crée un parcours d'apprentissage structuré sur "${t}" avec le focus "${f}" pour un niveau "${l}".
+
+Réponds avec exactement cette structure JSON :
+{
+  "topic": "${t}",
+  "focus": "${f}",
+  "level": "${l}",
+  "intro": "introduction motivante en 2 phrases",
+  "steps": [
+    {
+      "title": "Titre de l'étape",
+      "explanation": "Explication détaillée en 3-4 phrases",
+      "resources": [
+        {
+          "type": "VIDEO",
+          "title": "Titre de la vidéo",
+          "source": "Nom de la chaîne",
+          "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          "excerpt": "Description courte de la ressource",
+          "xp": 15
+        }
+      ],
+      "summary": "Résumé en 1 phrase",
+      "quiz": [
+        {
+          "question": "Question sur l'étape ?",
+          "options": ["Option A", "Option B", "Option C", "Option D"],
+          "answer": "Option A"
+        }
+      ]
+    }
+  ]
+}
+
+Génère 3 étapes minimum. Chaque étape doit avoir 1-2 ressources VIDEO réalistes.`,
+        },
+      ],
     });
-    return NextResponse.json({
-      resources: videos.map((r, i) => ({ ...r, id: `news-${Date.now()}-${i}` })),
-    });
+
+    const raw = message.content[0].type === "text" ? message.content[0].text : "{}";
+    const clean = raw.replace(/```json|```/g, "").trim();
+
+    try {
+      const parsed = JSON.parse(clean);
+      return NextResponse.json(parsed);
+    } catch {
+      return NextResponse.json({
+        topic: t,
+        focus: f,
+        level: l,
+        intro: "Parcours d'apprentissage en cours de génération.",
+        steps: [],
+      });
+    }
   }
 
+  // ── CHAT ───────────────────────────────────────────────────────────────
   if (type === "chat") {
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1024,
-      system: `Tu es l'assistant AkoLab, expert en ${passion}. 
+      system: `Tu es l'assistant AkoLab, expert en ${passion}.
 Quand l'utilisateur demande des vidéos sur un sujet précis, réponds avec le préfixe SEARCH: suivi de la requête YouTube optimale en anglais.
-Exemple: si l'utilisateur dit "montre-moi des 964 RS", réponds "SEARCH:Porsche 964 RS restoration review"
+Exemple : si l'utilisateur dit "montre-moi des 964 RS", réponds "SEARCH:Porsche 964 RS restoration review"
 Sinon réponds normalement en français, sans markdown, de façon conversationnelle.`,
       messages: [{ role: "user", content: passion }],
     });
+
     const raw = message.content[0].type === "text" ? message.content[0].text : "";
     const cleaned = cleanText(raw);
 
